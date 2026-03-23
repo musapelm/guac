@@ -17,6 +17,7 @@ package scanner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -76,6 +77,31 @@ func purlsLicenseScanWithClient(
 	cdParser := clearlydefined.NewLegalCertificationParser()
 	var certLegalIngest []assembler.CertifyLegalIngest
 	var hasSourceAtIngest []assembler.HasSourceAtIngest
+	var scanErrs []error
+
+	processBatch := func(batchPurls []string) {
+		batchedCL, batchedHSA, err := runQueryOnBatchedPurls(ctx, client, cdParser, batchPurls)
+		if err == nil {
+			certLegalIngest = append(certLegalIngest, batchedCL...)
+			hasSourceAtIngest = append(hasSourceAtIngest, batchedHSA...)
+			return
+		}
+
+		if len(batchPurls) > 1 {
+			for _, purl := range batchPurls {
+				singleCL, singleHSA, singleErr := runQueryOnBatchedPurls(ctx, client, cdParser, []string{purl})
+				if singleErr != nil {
+					scanErrs = append(scanErrs, fmt.Errorf("failed query for purl %q: %w", purl, singleErr))
+					continue
+				}
+				certLegalIngest = append(certLegalIngest, singleCL...)
+				hasSourceAtIngest = append(hasSourceAtIngest, singleHSA...)
+			}
+			return
+		}
+
+		scanErrs = append(scanErrs, err)
+	}
 
 	// the limit for the batch size that is allowed for clearly defined otherwise you receive a 400 or 414
 	if len(purls) > 500 {
@@ -87,31 +113,20 @@ func purlsLicenseScanWithClient(
 				i++
 			} else {
 				batchPurls = append(batchPurls, purl)
-				batchedCL, batchedHSA, err := runQueryOnBatchedPurls(ctx, client, cdParser, batchPurls)
-				if err != nil {
-					return nil, nil, fmt.Errorf("runQueryOnBatchedPurls failed with error: %w", err)
-				}
-				certLegalIngest = append(certLegalIngest, batchedCL...)
-				hasSourceAtIngest = append(hasSourceAtIngest, batchedHSA...)
+				processBatch(batchPurls)
 				batchPurls = make([]string, 0)
 				i = 0
 			}
 		}
 		if len(batchPurls) > 0 {
-			batchedCL, batchedHSA, err := runQueryOnBatchedPurls(ctx, client, cdParser, batchPurls)
-			if err != nil {
-				return nil, nil, fmt.Errorf("runQueryOnBatchedPurls failed with error: %w", err)
-			}
-			certLegalIngest = append(certLegalIngest, batchedCL...)
-			hasSourceAtIngest = append(hasSourceAtIngest, batchedHSA...)
+			processBatch(batchPurls)
 		}
 	} else {
-		batchedCL, batchedHSA, err := runQueryOnBatchedPurls(ctx, client, cdParser, purls)
-		if err != nil {
-			return nil, nil, fmt.Errorf("runQueryOnBatchedPurls failed with error: %w", err)
-		}
-		certLegalIngest = append(certLegalIngest, batchedCL...)
-		hasSourceAtIngest = append(hasSourceAtIngest, batchedHSA...)
+		processBatch(purls)
+	}
+
+	if len(certLegalIngest) == 0 && len(hasSourceAtIngest) == 0 && len(scanErrs) > 0 {
+		return nil, nil, fmt.Errorf("runQueryOnBatchedPurls failed with error: %w", errors.Join(scanErrs...))
 	}
 
 	return certLegalIngest, hasSourceAtIngest, nil

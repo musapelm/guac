@@ -16,7 +16,9 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -538,6 +540,64 @@ func TestPurlsLicenseScan(t *testing.T) {
 				t.Errorf("Unexpected results. (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+type flakyClearlyDefinedTransport struct {
+	base http.RoundTripper
+}
+
+func (t *flakyClearlyDefinedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost && strings.Contains(req.URL.Host, "api.clearlydefined.io") {
+		body, err := io.ReadAll(req.Body)
+		if err == nil {
+			req.Body = io.NopCloser(bytes.NewReader(body))
+			if strings.Contains(string(body), "maven/mavencentral/force/fail/1.0.0") {
+				return &http.Response{
+					StatusCode: http.StatusBadGateway,
+					Body:       io.NopCloser(strings.NewReader("bad gateway")),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}
+		}
+	}
+	return t.base.RoundTrip(req)
+}
+
+func TestPurlsLicenseScan_PartialSuccessOnBatchFailure(t *testing.T) {
+	ctx := logging.WithLogger(context.Background())
+	mockCD := mockclearlydefined.NewMockClearlyDefined()
+	defer mockCD.Close()
+
+	if err := mockCD.SetDefinitions(map[string][]byte{
+		"maven/mavencentral/org.apache.logging.log4j/log4j-core/2.8.1": testdata.CDMavenLog4JResponse,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mockClient := &http.Client{Transport: &flakyClearlyDefinedTransport{base: mockCD.GetTransport()}}
+
+	gotCLs, gotHSAs, err := purlsLicenseScanWithClient(ctx, mockClient, []string{
+		"pkg:maven/org.apache.logging.log4j/log4j-core@2.8.1",
+		"pkg:maven/force/fail@1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("expected partial success without error, got: %v", err)
+	}
+	if len(gotCLs) == 0 || len(gotHSAs) == 0 {
+		t.Fatalf("expected non-empty partial results, got CL=%d HSA=%d", len(gotCLs), len(gotHSAs))
+	}
+
+	found := false
+	for _, cl := range gotCLs {
+		if cl.Pkg != nil && cl.Pkg.Type == "maven" && cl.Pkg.Name == "log4j-core" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected healthy log4j result to be preserved")
 	}
 }
 

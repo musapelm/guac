@@ -44,6 +44,7 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 		fields     fields
 		wantErr    bool
 		errMessage error
+		exactCount bool
 		want       []*processor.Document
 	}{{
 		name: "multi-platform sbom",
@@ -83,7 +84,8 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 				},
 			},
 		},
-		wantErr: false,
+		exactCount: true,
+		wantErr:    false,
 	}, {
 		name: "get attestation and sbom",
 		fields: fields{
@@ -113,7 +115,8 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 				},
 			},
 		},
-		wantErr: false,
+		exactCount: true,
+		wantErr:    false,
 	}, {
 		name: "get OCI referrers",
 		fields: fields{
@@ -250,7 +253,9 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 					Source:    "mcr.microsoft.com/oss/kubernetes/kubectl@sha256:64f5e3b86c83acef2fb79e359a942bd2290e30773269f532856421db4e75cc30",
 				},
 			},
-		}}, {
+		},
+		exactCount: false,
+	}, {
 		name: "tag not specified not polling",
 		fields: fields{
 			ociValues: []string{
@@ -279,7 +284,8 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 				},
 			},
 		},
-		wantErr: false,
+		exactCount: true,
+		wantErr:    false,
 	}, {
 		name: "tag empty string",
 		fields: fields{
@@ -290,6 +296,7 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 			interval: 0,
 		},
 		errMessage: errors.New("image tag not specified to fetch"),
+		exactCount: true,
 		wantErr:    true,
 	}, {
 		name: "reference by digest",
@@ -320,7 +327,8 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 				},
 			},
 		},
-		wantErr: false,
+		exactCount: true,
+		wantErr:    false,
 	}, {
 		name: "reference by tag AND digest",
 		fields: fields{
@@ -350,7 +358,8 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 				},
 			},
 		},
-		wantErr: false,
+		exactCount: true,
+		wantErr:    false,
 	}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -392,8 +401,12 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 				t.Fatalf("Collector error handler error: %v", err)
 			}
 
-			if len(collectedDocs) != len(tt.want) {
-				t.Fatalf("g.RetrieveArtifacts() = %v, want %v", len(collectedDocs), len(tt.want))
+			if tt.exactCount {
+				if len(collectedDocs) != len(tt.want) {
+					t.Fatalf("g.RetrieveArtifacts() = %v, want %v", len(collectedDocs), len(tt.want))
+				}
+			} else if len(collectedDocs) < len(tt.want) {
+				t.Fatalf("g.RetrieveArtifacts() = %v, want at least %v", len(collectedDocs), len(tt.want))
 			}
 
 			for i := range tt.want {

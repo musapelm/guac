@@ -19,7 +19,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -1223,14 +1223,14 @@ func Test_SearchSubgraphFromVuln(t *testing.T) {
 	server, err := startTestServer()
 
 	if err != nil {
-		t.Errorf("error starting server: %s \n", err)
-		os.Exit(1)
+		t.Fatalf("error starting server: %s", err)
 	}
+	defer server.Close()
 
 	ctx := logging.WithLogger(context.Background())
 
 	httpClient := http.Client{}
-	gqlClient := graphql.NewClient("http://localhost:9090/query", &httpClient)
+	gqlClient := graphql.NewClient(server.URL+"/query", &httpClient)
 
 	testCases := []struct {
 		name              string
@@ -1649,23 +1649,9 @@ func Test_SearchSubgraphFromVuln(t *testing.T) {
 		})
 	}
 
-	// cleaning up server instance
-	done := make(chan bool, 1)
-	ctx, cf := context.WithCancel(ctx)
-	go func() {
-		_ = server.Shutdown(ctx)
-		done <- true
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		cf()
-		server.Close()
-	}
-	cf()
 }
 
-func startTestServer() (*http.Server, error) {
+func startTestServer() (*httptest.Server, error) {
 	ctx := logging.WithLogger(context.Background())
 	logger := logging.FromContext(ctx)
 
@@ -1673,14 +1659,15 @@ func startTestServer() (*http.Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize graphql server: %s", err)
 	}
-	http.Handle("/query", srv)
 
-	server := &http.Server{Addr: fmt.Sprintf(":%d", 9090)}
-	logger.Info("starting server")
+	// Use a fresh ServeMux per invocation to avoid "pattern already registered"
+	// panics on the global http.DefaultServeMux when tests run more than once in
+	// the same process or in parallel.
+	mux := http.NewServeMux()
+	mux.Handle("/query", srv)
 
-	go func() {
-		logger.Infof("server finished: %s", server.ListenAndServe())
-	}()
+	server := httptest.NewServer(mux)
+	logger.Infof("starting server at %s", server.URL)
 	return server, nil
 }
 
